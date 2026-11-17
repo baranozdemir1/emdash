@@ -2587,7 +2587,7 @@ describe("ContentEditor", () => {
 				const panel = getPanel(screen).element();
 				expect(panel).toHaveAttribute("inert");
 
-				await screen.getByLabelText("Title").fill("Changed");
+				await screen.getByLabelText("Title", { exact: true }).fill("Changed");
 				await screen.getByRole("button", { name: "Save" }).first().click();
 
 				await vi.waitFor(() => expect(document.activeElement).toBe(rating.element()));
@@ -2615,7 +2615,7 @@ describe("ContentEditor", () => {
 					},
 					onSave,
 				});
-				await screen.getByLabelText("Title").fill("Changed");
+				await screen.getByLabelText("Title", { exact: true }).fill("Changed");
 				await screen.getByRole("button", { name: "Save" }).first().click();
 
 				const rating = screen.getByLabelText("Rating", { exact: true }).element();
