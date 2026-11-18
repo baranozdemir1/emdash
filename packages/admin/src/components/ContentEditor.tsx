@@ -1522,6 +1522,7 @@ export function ContentEditor({
 		rev: item?._rev,
 		isDirty,
 		open: commentsOpen,
+		canEdit: !readOnly,
 		initialThreadId,
 	});
 	const showComments = canComment && commentsOpen;
