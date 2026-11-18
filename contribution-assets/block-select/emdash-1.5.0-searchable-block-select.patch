@@ -1,0 +1,352 @@
+diff --git a/packages/admin/src/components/BlocksField.tsx b/packages/admin/src/components/BlocksField.tsx
+index 604954d..fc393b9 100644
+--- a/packages/admin/src/components/BlocksField.tsx
++++ b/packages/admin/src/components/BlocksField.tsx
+@@ -392,10 +392,19 @@ function nestedDescriptor(
+ 	block: StoredBlockValue,
+ 	id?: string,
+ ): NestedFieldDescriptor {
++	const labels = field.validation?.optionLabels;
++	const labelFor = (option: string) =>
++		labels &&
++		typeof labels === "object" &&
++		!Array.isArray(labels) &&
++		Object.hasOwn(labels, option) &&
++		typeof (labels as Record<string, unknown>)[option] === "string"
++			? (labels as Record<string, string>)[option]!
++			: option;
+ 	const options = Array.isArray(field.validation?.options)
+ 		? field.validation.options
+ 				.filter((option): option is string => typeof option === "string")
+-				.map((option) => ({ value: option, label: option }))
++				.map((option) => ({ value: option, label: labelFor(option) }))
+ 		: field.options;
+ 	return {
+ 		...(id ? { id } : {}),
+@@ -410,8 +419,22 @@ function nestedDescriptor(
+ 	};
+ }
+ 
+-function listFieldDefinition({ options, ...subField }: ListSubField): LayoutFieldDefinition {
+-	return options ? { ...subField, validation: { options } } : subField;
++function listFieldDefinition({
++	options,
++	optionLabels,
++	searchable,
++	...subField
++}: ListSubField): LayoutFieldDefinition {
++	return options
++		? {
++				...subField,
++				validation: {
++					options,
++					...(optionLabels ? { optionLabels } : {}),
++					...(searchable !== undefined ? { searchable } : {}),
++				},
++			}
++		: subField;
+ }
+ 
+ function listLimit(field: LayoutFieldDefinition, key: "minItems" | "maxItems") {
+diff --git a/packages/admin/src/components/ContentEditor.tsx b/packages/admin/src/components/ContentEditor.tsx
+index e862380..d7191bf 100644
+--- a/packages/admin/src/components/ContentEditor.tsx
++++ b/packages/admin/src/components/ContentEditor.tsx
+@@ -3,6 +3,7 @@ import {
+ 	Banner,
+ 	Button,
+ 	Checkbox,
++	Combobox,
+ 	Field,
+ 	Input,
+ 	InputArea,
+@@ -3918,6 +3919,51 @@ function FieldRenderer({
+ 			for (const opt of selectOptions) {
+ 				selectItems[opt.value] = opt.label;
+ 			}
++			if (field.blockType && field.validation?.searchable === true) {
++				type Choice = { value: string; label: string };
++				const current = selectOptions.find((option) => option.value === value) ?? null;
++				return (
++					<Combobox<Choice>
++						label={chrome ? undefined : label}
++						items={selectOptions}
++						value={current}
++						disabled={readOnly}
++						isItemEqualToValue={(option, selected) => option.value === selected.value}
++						itemToStringLabel={(option) => option.label}
++						itemToStringValue={(option) => option.value}
++						onValueChange={(option) => handleChange(option?.value ?? "")}
++					>
++						<Combobox.TriggerInput
++							id={id}
++							aria-labelledby={chrome?.labelledBy}
++							placeholder={t`Search options…`}
++							clearLabel={t`Clear selection`}
++							showOptionsLabel={t`Show options`}
++							className={chrome ? "block min-w-0" : undefined}
++							render={
++								chrome
++									? (inputProps) => (
++											<input
++												{...inputProps}
++												className={cn(inputProps.className, QUIET_INPUT, "pe-12")}
++											/>
++										)
++									: undefined
++							}
++						/>
++						<Combobox.Content>
++							<Combobox.List>
++								{(option: Choice) => (
++									<Combobox.Item key={option.value} value={option}>
++										{option.label}
++									</Combobox.Item>
++								)}
++							</Combobox.List>
++							<Combobox.Empty>{t`No matching options.`}</Combobox.Empty>
++						</Combobox.Content>
++					</Combobox>
++				);
++			}
+ 			if (chrome) {
+ 				return (
+ 					<DescribedSelect chrome={chrome}>
+diff --git a/packages/admin/src/lib/block-field-layout.ts b/packages/admin/src/lib/block-field-layout.ts
+index 2052049..fbd46bb 100644
+--- a/packages/admin/src/lib/block-field-layout.ts
++++ b/packages/admin/src/lib/block-field-layout.ts
+@@ -26,6 +26,8 @@ export type ListPresentation = "lines" | "table" | "items";
+ 
+ export interface ListSubField extends PlanField {
+ 	options?: string[];
++	optionLabels?: Record<string, string>;
++	searchable?: boolean;
+ }
+ 
+ /** A block field, or a list's sub-field, as an open block lays it out. */
+@@ -236,7 +238,7 @@ export function repeaterSubFields(field: Pick<BlockFieldDefinition, "validation"
+ 	if (!Array.isArray(subFields)) return [];
+ 	return subFields.flatMap((subField): ListSubField[] => {
+ 		if (!isRecord(subField)) return [];
+-		const { slug, type, label, required, options } = subField;
++		const { slug, type, label, required, options, optionLabels, searchable } = subField;
+ 		if (typeof slug !== "string" || typeof type !== "string") return [];
+ 		return [
+ 			{
+@@ -244,6 +246,16 @@ export function repeaterSubFields(field: Pick<BlockFieldDefinition, "validation"
+ 				type,
+ 				label: typeof label === "string" && label ? label : slug,
+ 				...(required === true ? { required } : {}),
++				...(isRecord(optionLabels)
++					? {
++							optionLabels: Object.fromEntries(
++								Object.entries(optionLabels).filter(
++									(entry): entry is [string, string] => typeof entry[1] === "string",
++								),
++							),
++						}
++					: {}),
++				...(typeof searchable === "boolean" ? { searchable } : {}),
+ 				...(Array.isArray(options)
+ 					? { options: options.filter((option): option is string => typeof option === "string") }
+ 					: {}),
+diff --git a/packages/core/src/api/schemas/schema.ts b/packages/core/src/api/schemas/schema.ts
+index 37c6cbd..93fb2cf 100644
+--- a/packages/core/src/api/schemas/schema.ts
++++ b/packages/core/src/api/schemas/schema.ts
+@@ -295,15 +295,22 @@ const blockFieldTypeValues = z.enum([
+ 	"repeater",
+ ]);
+ 
++const blockSelectPresentation = {
++	optionLabels: z.record(z.string(), z.string().min(1).max(500)).optional(),
++	searchable: z.boolean().optional(),
++};
++const blockRepeaterSubFieldSchema = repeaterSubFieldSchema.extend(blockSelectPresentation);
++
+ const blockFieldValidation = z
+ 	.object({
++		...blockSelectPresentation,
+ 		min: z.number().optional(),
+ 		max: z.number().optional(),
+ 		minLength: z.number().int().min(0).optional(),
+ 		maxLength: z.number().int().min(0).optional(),
+ 		pattern: z.string().optional(),
+ 		options: z.array(z.string()).optional(),
+-		subFields: z.array(repeaterSubFieldSchema).min(1).optional(),
++		subFields: z.array(blockRepeaterSubFieldSchema).min(1).optional(),
+ 		minItems: z.number().int().min(0).optional(),
+ 		maxItems: z.number().int().min(1).optional(),
+ 		allowedMimeTypes: z.array(z.string()).min(1).max(64).optional(),
+diff --git a/packages/core/src/schema/block-type-contract.ts b/packages/core/src/schema/block-type-contract.ts
+index 009d334..8e35e72 100644
+--- a/packages/core/src/schema/block-type-contract.ts
++++ b/packages/core/src/schema/block-type-contract.ts
+@@ -24,7 +24,7 @@ const VALIDATION_KEYS: Record<BlockFieldType, ReadonlySet<string>> = {
+ 	integer: new Set(["min", "max"]),
+ 	boolean: new Set(),
+ 	datetime: new Set(),
+-	select: new Set(["options"]),
++	select: new Set(["options", "optionLabels", "searchable"]),
+ 	multiSelect: new Set(["options"]),
+ 	portableText: new Set(),
+ 	image: new Set(["allowedMimeTypes"]),
+@@ -85,6 +85,28 @@ function validateOptions(values: unknown, path: string): asserts values is strin
+ 	if (new Set(values).size !== values.length) fail(path, "must not contain duplicates");
+ }
+ 
++function validateSelectPresentation(
++	value: { optionLabels?: unknown; searchable?: unknown },
++	options: readonly string[],
++	path: string,
++): void {
++	if (value.searchable !== undefined && typeof value.searchable !== "boolean")
++		fail(`${path}.searchable`, "must be a boolean");
++	if (value.optionLabels === undefined) return;
++	if (
++		!value.optionLabels ||
++		typeof value.optionLabels !== "object" ||
++		Array.isArray(value.optionLabels)
++	)
++		fail(`${path}.optionLabels`, "must map option values to labels");
++	for (const [key, label] of Object.entries(value.optionLabels)) {
++		if (!options.includes(key))
++			fail(`${path}.optionLabels`, "labels must name declared option values");
++		if (typeof label !== "string" || !label.trim() || label.length > 500)
++			fail(`${path}.optionLabels`, "labels must contain between 1 and 500 characters");
++	}
++}
++
+ function validateRepeaterSubFields(
+ 	value: unknown,
+ 	path: string,
+@@ -108,9 +130,13 @@ function validateRepeaterSubFields(
+ 			fail(`${fieldPath}.type`, `unsupported repeater field type "${String(type)}"`);
+ 		}
+ 		const options = "options" in subField ? subField.options : undefined;
+-		if (type === "select") validateOptions(options, `${fieldPath}.options`);
+-		else if (options !== undefined)
++		if (type === "select") {
++			validateOptions(options, `${fieldPath}.options`);
++			validateSelectPresentation(subField, options, fieldPath);
++		} else if (options !== undefined)
+ 			fail(`${fieldPath}.options`, `is not supported for type "${type}"`);
++		if (type !== "select" && ("optionLabels" in subField || "searchable" in subField))
++			fail(fieldPath, "select presentation is only supported on select sub-fields");
+ 		const required = "required" in subField ? subField.required : undefined;
+ 		if (required !== undefined && typeof required !== "boolean") {
+ 			fail(`${fieldPath}.required`, "must be a boolean");
+@@ -180,6 +206,8 @@ function validateValidation(field: BlockFieldDefinition, path: string): void {
+ 	}
+ 	if (field.type === "select" || field.type === "multiSelect") {
+ 		validateOptions(validation.options, `${path}.validation.options`);
++		if (field.type === "select")
++			validateSelectPresentation(validation, validation.options!, `${path}.validation`);
+ 	}
+ 	if (field.type === "repeater") {
+ 		validateRepeaterSubFields(validation.subFields, `${path}.validation.subFields`);
+diff --git a/packages/core/src/schema/types.ts b/packages/core/src/schema/types.ts
+index 1007998..a0633b4 100644
+--- a/packages/core/src/schema/types.ts
++++ b/packages/core/src/schema/types.ts
+@@ -183,6 +183,9 @@ export interface RepeaterSubField {
+ 	label: string;
+ 	required?: boolean;
+ 	options?: string[]; // For select sub-fields
++	/** Native block select presentation; stored values remain strings. */
++	optionLabels?: Record<string, string>;
++	searchable?: boolean;
+ }
+ 
+ /** Allowed types for repeater sub-fields (no nesting, no complex types) */
+@@ -206,6 +209,9 @@ export interface FieldValidation {
+ 	maxLength?: number;
+ 	pattern?: string;
+ 	options?: string[]; // For select/multiSelect
++	/** Native block select presentation; stored values remain strings. */
++	optionLabels?: Record<string, string>;
++	searchable?: boolean;
+ 	subFields?: RepeaterSubField[]; // For repeater fields
+ 	minItems?: number; // For repeater fields
+ 	maxItems?: number; // For repeater fields
+diff --git a/packages/core/tests/unit/schema/block-select-presentation.test.ts b/packages/core/tests/unit/schema/block-select-presentation.test.ts
+new file mode 100644
+index 0000000..55164ef
+--- /dev/null
++++ b/packages/core/tests/unit/schema/block-select-presentation.test.ts
+@@ -0,0 +1,74 @@
++import { describe, expect, it } from "vitest";
++
++import { blockFieldDefinitionSchema } from "../../../src/api/schemas/schema.js";
++import {
++	compareBlockFields,
++	validateBlockFields,
++} from "../../../src/schema/block-type-contract.js";
++import type { BlockFieldDefinition } from "../../../src/schema/block-types.js";
++import { generateBlockFieldSchema } from "../../../src/schema/zod-generator.js";
++
++const field: BlockFieldDefinition = {
++	slug: "questions",
++	label: "Questions",
++	type: "repeater",
++	validation: {
++		subFields: [
++			{
++				slug: "faq",
++				label: "FAQ",
++				type: "select",
++				required: true,
++				options: ["faq-1", "faq-2"],
++				optionLabels: { "faq-1": "How does delivery work?", "faq-2": "How does delivery work?" },
++				searchable: true,
++			},
++		],
++	},
++};
++describe("block select presentation", () => {
++	it("retains labels/search in REST but validates only the stable stored values", () => {
++		expect(blockFieldDefinitionSchema.parse(field)).toEqual(field);
++		expect(validateBlockFields([field])).toEqual([field]);
++		const schema = generateBlockFieldSchema(field);
++		expect(schema.parse([{ faq: "faq-2" }])).toEqual([{ faq: "faq-2" }]);
++		expect(schema.safeParse([{ faq: "How does delivery work?" }]).success).toBe(false);
++	});
++	it("rejects ghost labels, empty labels and presentation on non-select fields", () => {
++		for (const extra of [
++			{ optionLabels: { ghost: "Question" } },
++			{ optionLabels: { "faq-1": "" } },
++			{ searchable: "yes" },
++		]) {
++			const next = structuredClone(field);
++			Object.assign(next.validation!.subFields![0]!, extra);
++			expect(() => validateBlockFields([next])).toThrow();
++		}
++		expect(() =>
++			validateBlockFields([
++				{ slug: "name", label: "Name", type: "string", validation: { searchable: true } },
++			]),
++		).toThrow();
++	});
++	it("keeps label and search changes compatible without weakening value constraints", () => {
++		const next = structuredClone(field);
++		next.validation!.subFields![0]!.optionLabels = {
++			"faq-1": "Updated title",
++			"faq-2": "Another question",
++		};
++		next.validation!.subFields![0]!.searchable = false;
++		expect(compareBlockFields([field], [next]).compatible).toBe(true);
++		next.validation!.subFields![0]!.options = ["faq-1"];
++		expect(compareBlockFields([field], [next]).compatible).toBe(false);
++	});
++	it("preserves ordinary string option definitions", () => {
++		const plain: BlockFieldDefinition = {
++			slug: "kind",
++			label: "Kind",
++			type: "select",
++			validation: { options: ["one", "two"] },
++		};
++		expect(validateBlockFields([plain])).toEqual([plain]);
++		expect(generateBlockFieldSchema(plain).parse("one")).toBe("one");
++	});
++});
