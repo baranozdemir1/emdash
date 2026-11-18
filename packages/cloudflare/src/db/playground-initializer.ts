@@ -79,7 +79,7 @@ export async function initializePlayground(db: Kysely<Database>, seed: SeedFile)
 		includeContent: true,
 		onConflict: "update",
 	});
-	await seedPlaygroundComments(db, now);
+	await seedPlaygroundComments(db, now, { id: PLAYGROUND_USER_ID, role: PLAYGROUND_USER_ROLE });
 
 	const repair = await handleMediaUsageRepair(db, { scope: "all" });
 	if (!repair.success || repair.data.status !== "complete") {
